@@ -2,8 +2,16 @@
 
 namespace App\Controller;
 
+use App\Exception\DataNotFoundException;
+use App\Exception\InvalidJsonDataException;
+use App\Model\CheckCurrencySuccessModel;
+use App\Model\CurrencyModel;
 use App\Model\Exception\DataNotFoundModel;
 use App\Model\Exception\JsonDataInvalidModel;
+use App\Model\ExchangeRateCurrencySuccessModel;
+use App\Query\ExchangeRateCurrencyQuery;
+use App\Repository\CurrencyRepository;
+use App\Service\RequestServiceInterface;
 use App\Tool\ResponseTool;
 use Nelmio\ApiDocBundle\Annotation\Model;
 use OpenApi\Attributes as OA;
@@ -33,27 +41,74 @@ class CurrencyController extends AbstractController
             new OA\Response(
                 response: 200,
                 description: "Success",
+                content: new Model(type: CheckCurrencySuccessModel::class)
             )
         ]
     )]
-    public function checkCurrency(): Response
+    public function checkCurrency(
+        CurrencyRepository $currencyRepository
+    ): Response
     {
-        return ResponseTool::getResponse();
+        $successModel = new CheckCurrencySuccessModel();
+
+        foreach ($currencyRepository->findAll() as $currency) {
+            $successModel->addCurrency(
+                new CurrencyModel(
+                    $currency->getId(),
+                    $currency->getName(),
+                    $currency->getCurrencyCode(),
+                    $currency->getExchangeRate()
+                )
+            );
+        }
+
+        return ResponseTool::getResponse($successModel);
     }
 
+    /**
+     * @throws InvalidJsonDataException
+     * @throws DataNotFoundException
+     */
     #[Route('/api/currency', name: 'exchangeRateCurrency', methods: ['POST'])]
     #[OA\Post(
         description: "Endpoint returning a conversion of the exchange rate to given currency",
-        requestBody: new OA\RequestBody(),
+        requestBody: new OA\RequestBody(
+            required: true,
+            content: new OA\JsonContent(
+                ref: new Model(type: ExchangeRateCurrencyQuery::class),
+                type: "object"
+            ),
+        ),
         responses: [
             new OA\Response(
                 response: 200,
                 description: "Success",
+                content: new Model(type: ExchangeRateCurrencySuccessModel::class)
             ),
         ]
     )]
-    public function exchangeRateCurrency(Request $request): Response
+    public function exchangeRateCurrency(
+        Request                 $request,
+        RequestServiceInterface $requestServiceInterface,
+        CurrencyRepository      $currencyRepository
+    ): Response
     {
-        return ResponseTool::getResponse();
+        $exchangeRateCurrencyQuery = $requestServiceInterface->getRequestBodyContent($request, ExchangeRateCurrencyQuery::class);
+
+        if ($exchangeRateCurrencyQuery instanceof ExchangeRateCurrencyQuery) {
+            $currency = $currencyRepository->findOneBy([
+                'currencyCode' => $exchangeRateCurrencyQuery->getCurrencyCode()
+            ]);
+
+            if ($currency === null) {
+                throw new DataNotFoundException(["currency.dont.exist"]);
+            }
+
+            $amount = $exchangeRateCurrencyQuery->getExchangeAmount() * $currency->getExchangeRate();
+
+            return ResponseTool::getResponse(new ExchangeRateCurrencySuccessModel($amount, $currency->getName()));
+        }
+
+        throw new InvalidJsonDataException("exchange.rate.invalid.query");
     }
 }
